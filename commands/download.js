@@ -1,5 +1,6 @@
-import fetch from 'node-fetch';
+import { ytmp3, ytmp4 } from 'ruhend-scraper';
 import yts from 'yt-search';
+import fetch from 'node-fetch';
 
 // ─── .song / .play / .mp3 / .ytmp3 / .music / .audio ───────────────────────
 export async function song(message, client, query) {
@@ -10,58 +11,37 @@ export async function song(message, client, query) {
     }
 
     try {
-        const search = await yts(query);
-        const video = search?.videos?.[0];
-        if (!video) {
-            return client.sendMessage(remoteJid, { text: '❌ No results found.' }, { quoted: message });
+        let videoUrl = query;
+        let fallbackTitle = null;
+
+        if (!query.includes('youtube.com') && !query.includes('youtu.be')) {
+            const search = await yts(query);
+            const video = search?.videos?.[0];
+            if (!video) {
+                return client.sendMessage(remoteJid, { text: '❌ No results found.' }, { quoted: message });
+            }
+            videoUrl = video.url;
+            fallbackTitle = video.title;
         }
 
-        const apiUrl = `https://arslan-apis-v2.vercel.app/download/ytmp3?url=${encodeURIComponent(video.url)}`;
-        const res = await fetch(apiUrl, { signal: AbortSignal.timeout(60000) });
-        const data = await res.json();
+        const data = await ytmp3(videoUrl);
+        const dlUrl = data?.audio || data?.url || data?.download;
 
-        const dlUrl = data?.result?.download?.url;
-        if (!data?.status || !dlUrl) {
+        if (!dlUrl) {
             return client.sendMessage(remoteJid, { text: '❌ Audio not generated.' }, { quoted: message });
         }
 
-        const meta = data.result.metadata || {};
-        const quality = data.result.download.quality || '128kbps';
-
-        // Download the audio ourselves first instead of handing the raw URL
-        // to Baileys. Some third-party CDNs (like the one behind this API)
-        // reject or 404 requests that don't look like a normal browser
-        // request, which is what was causing "Failed to fetch stream" 404s.
-        const audioRes = await fetch(dlUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://arslan-apis-v2.vercel.app/'
-            },
-            signal: AbortSignal.timeout(60000)
-        });
-
-        if (!audioRes.ok) {
-            console.error(`SONG ERROR: audio link returned ${audioRes.status} for "${query}" -> ${dlUrl}`);
-            return client.sendMessage(remoteJid, {
-                text: '❌ The download link for this song expired or is dead (link returned an error). Please try a different song or try again in a moment.'
-            }, { quoted: message });
-        }
-
-        const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
-
-        if (!audioBuffer.length) {
-            return client.sendMessage(remoteJid, { text: '❌ Downloaded file was empty, try again.' }, { quoted: message });
-        }
+        const title = data?.title || fallbackTitle || 'song';
 
         await client.sendMessage(remoteJid, {
-            audio: audioBuffer,
+            audio: { url: dlUrl },
             mimetype: 'audio/mpeg',
             ptt: false,
-            fileName: `${meta.title || video.title || 'song'}.mp3`
+            fileName: `${title}.mp3`
         }, { quoted: message });
 
         await client.sendMessage(remoteJid, {
-            text: `🎵 *${meta.title || video.title}*\n🎚️ Quality: ${quality}\n\n*Powered by: KAIRO ZYNEX*`
+            text: `🎵 *${title}*\n\n*Powered by: KAIRO ZYNEX*`
         }, { quoted: message });
 
     } catch (err) {
@@ -71,19 +51,16 @@ export async function song(message, client, query) {
 }
 
 // ─── .video1 / .vid / .ytv ──────────────────────────────────────────────────
-export async function video1(message, client, query, apiKey) {
+export async function video1(message, client, query) {
     const remoteJid = message.key.remoteJid;
 
     if (!query) {
         return client.sendMessage(remoteJid, { text: '❌ Provide a YouTube link or search query.\nEx: .video1 Pasoori' }, { quoted: message });
     }
 
-    if (!apiKey) {
-        return client.sendMessage(remoteJid, { text: '❌ .video1 needs GTECH_API_KEY set in your environment before it can be used.' }, { quoted: message });
-    }
-
     try {
         let videoUrl = query;
+
         if (!query.includes('youtube.com') && !query.includes('youtu.be')) {
             const search = await yts(query);
             const video = search?.videos?.[0];
@@ -91,23 +68,16 @@ export async function video1(message, client, query, apiKey) {
             videoUrl = video.url;
         }
 
-        const res = await fetch(`https://gtech-api-xtp1.onrender.com/api/video/yt?apikey=${encodeURIComponent(apiKey)}&url=${encodeURIComponent(videoUrl)}`);
-        const data = await res.json();
+        const data = await ytmp4(videoUrl);
+        const finalUrl = data?.video || data?.url || data?.download;
 
-        if (!data.status) {
-            return client.sendMessage(remoteJid, { text: '❌ Failed to fetch video.' }, { quoted: message });
-        }
-
-        const { video_url_hd: hdUrl, video_url_sd: sdUrl } = data.result.media;
-        const finalUrl = hdUrl && !hdUrl.includes('No') ? hdUrl : sdUrl;
-
-        if (!finalUrl || finalUrl.includes('No')) {
+        if (!finalUrl) {
             return client.sendMessage(remoteJid, { text: '❌ No downloadable video found.' }, { quoted: message });
         }
 
         await client.sendMessage(remoteJid, {
             video: { url: finalUrl },
-            caption: '*Powered by: KAIRO ZYNEX*'
+            caption: `*${data?.title || 'Video'}*\n\n*Powered by: KAIRO ZYNEX*`
         }, { quoted: message });
 
     } catch (err) {

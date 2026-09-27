@@ -17,6 +17,37 @@ async function request(url) {
     return await axios.get(url, axiosConfig);
 }
 
+// New source, tried first. No official docs were available, so this parses
+// several common response shapes used by these YouTube-downloader APIs.
+// If it keeps failing, log the raw JSON (console.log(data)) and adjust the
+// field lookup below to match.
+async function whiteShadow(url, type) {
+    const api = `https://whiteshadow-x-api.onrender.com/download/${type}?url=${encodeURIComponent(url)}`;
+    const response = await request(api);
+    const data = response.data || {};
+
+    const dlUrl =
+        data?.result?.download?.url ||
+        data?.result?.url ||
+        data?.result?.downloadUrl ||
+        data?.data?.download?.url ||
+        data?.data?.url ||
+        data?.url ||
+        data?.downloadUrl;
+
+    const title =
+        data?.result?.metadata?.title ||
+        data?.result?.title ||
+        data?.data?.title ||
+        data?.title ||
+        '';
+
+    if (dlUrl) {
+        return { url: dlUrl, title };
+    }
+    throw new Error('WhiteShadow failed');
+}
+
 async function eliteProTech(url, format) {
     const api = `https://eliteprotech-apis.zone.id/ytdown?url=${encodeURIComponent(url)}&format=${format}`;
     const response = await request(api);
@@ -92,6 +123,7 @@ export async function song(message, client, query) {
         }
 
         const servers = [
+            { name: 'WhiteShadow', run: () => whiteShadow(youtubeUrl, 'ytmp3') },
             { name: 'EliteProTech', run: () => eliteProTech(youtubeUrl, 'mp3') },
             { name: 'Yupra', run: () => yupra(youtubeUrl, 'mp3') },
             { name: 'Okatsu', run: () => okatsu(youtubeUrl, 'mp3') }
@@ -165,6 +197,7 @@ export async function video1(message, client, query) {
         }
 
         const servers = [
+            { name: 'WhiteShadow', run: () => whiteShadow(youtubeUrl, 'ytmp4') },
             { name: 'EliteProTech', run: () => eliteProTech(youtubeUrl, 'mp4') },
             { name: 'Yupra', run: () => yupra(youtubeUrl, 'mp4') },
             { name: 'Okatsu', run: () => okatsu(youtubeUrl, 'mp4') }

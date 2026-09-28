@@ -28,6 +28,8 @@ import welcomeModule from '../commands/welcomeModule.js';
 import addmember from '../commands/addmember.js';
 import creategroup from '../commands/creategroup.js';
 import groupstatus from '../commands/groupstatus.js';
+import toImageModule from '../commands/toimage.js';
+import ffmpegcheckModule from '../commands/ffmpegcheck.js';
 import fs from 'fs';
 import configManager from '../utils/manageConfigs.js';
 import { OWNER_NUM } from '../config.js';
@@ -143,6 +145,8 @@ async function handleIncomingMessage(event, client) {
                 case 'owner': return await owner(message, client);
                 case 'tourl': return await tourl(message, client);
                 case 'vv': return await viewonce(message, client);
+                case 'toimage': return await toImageModule.toImage(message, client);
+                case 'ffmpegcheck': return await ffmpegcheckModule.ffmpegcheck(message, client, isOwner);
                 case 'save': return await save(message, client);
                 case 'photo': return await media.photo(message, client);
                 case 'tomp3':
@@ -162,7 +166,8 @@ async function handleIncomingMessage(event, client) {
                 case 'private': return await mode.setPrivate(message, client, isOwner);
                 case 'public': return await mode.setPublic(message, client, isOwner);
 
-                case 'add': return await addmember.addMember(message, client, args);
+                case 'add':
+                case 'addmember': return await addmember.addMember(message, client, args);
                 case 'creategc':
                 case 'creategroup': return await creategroup.creategroup(message, client, args.join(' '), isOwner);
                 case 'groupstatus':
@@ -204,7 +209,12 @@ async function handleIncomingMessage(event, client) {
                 case 'statuslike':
                     return await configCommands.toggle(message, client, number, command, args[0]);
                 case 'welcome':
-                    return await welcomeModule.welcomeToggle(message, client, args, isOwner);
+                    // NOTE: was welcomeModule.welcomeToggle, which writes to a
+                    // different store than the code that actually sends the
+                    // welcome/goodbye messages (group.welcome, wired in the
+                    // connector). Switched to group.welcomeToggle so the
+                    // toggle actually controls what gets sent.
+                    return await group.welcomeToggle(message, client, args, isOwner);
                 case 'setprefix': return await configCommands.setPrefix(message, client, number, args.join(' '));
                 case 'getconfig': return await configCommands.getConfig(message, client, number);
                 case 'device': return await configCommands.device(message, client);
@@ -230,7 +240,9 @@ async function handleIncomingMessage(event, client) {
                 case 'video1':
                 case 'vid':
                 case 'ytv':
-                    return await download.video1(message, client, args.join(' '), process.env.GTECH_API_KEY);
+                    // No longer needs GTECH_API_KEY: download.js now uses the
+                    // WhiteShadow/EliteProTech/Yupra/Okatsu fallback chain.
+                    return await download.video1(message, client, args.join(' '));
                 case 'apk':
                 case 'app':
                 case 'playstore':

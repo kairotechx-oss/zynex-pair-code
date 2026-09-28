@@ -94,7 +94,13 @@ export async function telegram(message, client, args) {
                         : `ffmpeg -y -i "${inPath}" -vf "scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=#00000000" -c:v libwebp -loop 0 -pix_fmt yuva420p -quality 75 "${outPath}"`;
 
                     await new Promise((resolve, reject) => {
-                        exec(cmd, { timeout: 30000 }, (err) => err ? reject(err) : resolve());
+                        exec(cmd, { timeout: 30000 }, (err, stdout, stderr) => {
+                            if (err) {
+                                err.ffmpegStderr = (stderr || '').trim().split('\n').slice(-6).join('\n');
+                                return reject(err);
+                            }
+                            resolve();
+                        });
                     });
 
                     finalBuffer = fs.readFileSync(outPath);
@@ -125,15 +131,16 @@ export async function telegram(message, client, args) {
 
             } catch (err) {
                 failed++;
-                if (!firstError) firstError = err.message;
-                console.error(`Sticker ${i + 1} failed:`, err.message);
+                const detail = err.ffmpegStderr || err.message;
+                if (!firstError) firstError = detail;
+                console.error(`Sticker ${i + 1} failed:`, detail);
                 continue;
             }
         }
 
         await client.sendMessage(remoteJid, {
             text: `✅ *Done!*\n\n✔️ Success: *${ok}/${total}*\n❌ Failed: *${failed}*\n` +
-                (firstError ? `\n☻️ *First error:* ${firstError.slice(0, 200)}` : '') +
+                (firstError ? `\n🐛 *First error:*\n${firstError.slice(-600)}` : '') +
                 `\n\n*Powered by: KAIRO ZYNEX*`
         }, { quoted: message });
 

@@ -1,163 +1,65 @@
-import axios from 'axios';
+import { ytmp3, ytmp4 } from 'ruhend-scraper';
 import yts from 'yt-search';
-
-// ─── Shared HTTP + multi-server fallback helpers ───────────────────────────
-// Same 3 backing APIs/endpoints as provided — logic untouched, only wrapped
-// so song() and video1() can both reuse them for mp3/mp4.
-
-const axiosConfig = {
-    timeout: 60000,
-    headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-        Accept: 'application/json, text/plain, */*'
-    }
-};
-
-async function request(url) {
-    return await axios.get(url, axiosConfig);
-}
-
-// New source, tried first. No official docs were available, so this parses
-// several common response shapes used by these YouTube-downloader APIs.
-// If it keeps failing, log the raw JSON (console.log(data)) and adjust the
-// field lookup below to match.
-async function whiteShadow(url, type) {
-    const api = `https://whiteshadow-x-api.onrender.com/download/${type}?url=${encodeURIComponent(url)}`;
-    const response = await request(api);
-    const data = response.data || {};
-
-    const dlUrl =
-        data?.result?.download?.url ||
-        data?.result?.url ||
-        data?.result?.downloadUrl ||
-        data?.data?.download?.url ||
-        data?.data?.url ||
-        data?.url ||
-        data?.downloadUrl;
-
-    const title =
-        data?.result?.metadata?.title ||
-        data?.result?.title ||
-        data?.data?.title ||
-        data?.title ||
-        '';
-
-    if (dlUrl) {
-        return { url: dlUrl, title };
-    }
-    throw new Error('WhiteShadow failed');
-}
-
-async function eliteProTech(url, format) {
-    const api = `https://eliteprotech-apis.zone.id/ytdown?url=${encodeURIComponent(url)}&format=${format}`;
-    const response = await request(api);
-    const data = response.data || {};
-
-    if (data.success && data.downloadURL) {
-        return { url: data.downloadURL, title: data.title || '' };
-    }
-    throw new Error('EliteProTech failed');
-}
-
-async function yupra(url, type) {
-    const api = `https://api.yupra.my.id/api/downloader/yt${type}?url=${encodeURIComponent(url)}`;
-    const response = await request(api);
-    const data = response.data || {};
-
-    if (data.success && data.data && data.data.download_url) {
-        return {
-            url: data.data.download_url,
-            title: data.data.title || '',
-            thumbnail: data.data.thumbnail || ''
-        };
-    }
-    throw new Error('Yupra failed');
-}
-
-async function okatsu(url, type) {
-    const api = `https://okatsu-rolezapiiz.vercel.app/downloader/yt${type}?url=${encodeURIComponent(url)}`;
-    const response = await request(api);
-    const result = response.data?.result || {};
-    const field = type === 'mp3' ? result.mp3 : result.mp4;
-
-    if (field) {
-        return { url: field, title: result.title || '' };
-    }
-    throw new Error('Okatsu failed');
-}
-
-function cleanFileName(title, fallback) {
-    return (
-        (title || '')
-            .replace(/[<>:"/\\|?*\x00-\x1F]/g, '')
-            .replace(/\s+/g, ' ')
-            .trim()
-            .slice(0, 100) || fallback
-    );
-}
+import fetch from 'node-fetch';
+import axios from 'axios';
 
 // ─── .song / .play / .mp3 / .ytmp3 / .music / .audio ───────────────────────
 export async function song(message, client, query) {
     const remoteJid = message.key.remoteJid;
 
     if (!query) {
-        return client.sendMessage(remoteJid, {
-            text: '❌ Provide a song name or YouTube link.\nEx: .play Faded Alan Walker'
-        }, { quoted: message });
+        return client.sendMessage(remoteJid, { text: '❌ Provide a song name or YouTube link.\nEx: .play Faded Alan Walker' }, { quoted: message });
     }
 
     try {
-        let youtubeUrl;
-        let searchTitle = '';
+        let videoUrl = query;
+        let fallbackTitle = null;
 
-        if (/^https?:\/\//i.test(query)) {
-            youtubeUrl = query;
-        } else {
+        if (!query.includes('youtube.com') && !query.includes('youtu.be')) {
             const search = await yts(query);
             const video = search?.videos?.[0];
             if (!video) {
                 return client.sendMessage(remoteJid, { text: '❌ No results found.' }, { quoted: message });
             }
-            youtubeUrl = video.url;
-            searchTitle = video.title || '';
+            videoUrl = video.url;
+            fallbackTitle = video.title;
         }
 
-        const servers = [
-            { name: 'WhiteShadow', run: () => whiteShadow(youtubeUrl, 'ytmp3') },
-            { name: 'EliteProTech', run: () => eliteProTech(youtubeUrl, 'mp3') },
-            { name: 'Yupra', run: () => yupra(youtubeUrl, 'mp3') },
-            { name: 'Okatsu', run: () => okatsu(youtubeUrl, 'mp3') }
-        ];
+        let dlUrl = null;
+        let title = fallbackTitle || 'song';
 
-        let audioData = null;
-        for (const server of servers) {
+        // Primary source: apis-keith
+        try {
+            const res = await axios.get(`https://apis-keith.vercel.app/download/dlmp3?url=${encodeURIComponent(videoUrl)}`, { timeout: 30000 });
+            const d = res.data;
+            if (d?.status && d?.result?.downloadUrl) {
+                dlUrl = d.result.downloadUrl;
+                title = d.result.title || title;
+            }
+        } catch (e) {
+            console.log('apis-keith failed, trying ruhend-scraper:', e.message);
+        }
+
+        // Fallback: ruhend-scraper
+        if (!dlUrl) {
             try {
-                console.log(`Trying ${server.name}...`);
-                const result = await server.run();
-                if (result?.url) {
-                    audioData = result;
-                    console.log(`${server.name} SUCCESS`);
-                    break;
-                }
-            } catch (err) {
-                console.log(`${server.name} FAILED:`, err.message);
+                const data = await ytmp3(videoUrl);
+                dlUrl = data?.audio || data?.url || data?.download;
+                title = data?.title || title;
+            } catch (e) {
+                console.log('ruhend-scraper ytmp3 also failed:', e.message);
             }
         }
 
-        if (!audioData) {
-            return client.sendMessage(remoteJid, {
-                text: '❌ Audio download failed — all servers are currently unavailable. Try again later.'
-            }, { quoted: message });
+        if (!dlUrl) {
+            return client.sendMessage(remoteJid, { text: '❌ Audio not generated.' }, { quoted: message });
         }
 
-        const title = audioData.title || searchTitle || 'KAIRO ZYNEX Audio';
-        const fileName = cleanFileName(title, 'song');
-
         await client.sendMessage(remoteJid, {
-            audio: { url: audioData.url },
+            audio: { url: dlUrl },
             mimetype: 'audio/mpeg',
             ptt: false,
-            fileName: `${fileName}.mp3`
+            fileName: `${title}.mp3`
         }, { quoted: message });
 
         await client.sendMessage(remoteJid, {
@@ -175,66 +77,29 @@ export async function video1(message, client, query) {
     const remoteJid = message.key.remoteJid;
 
     if (!query) {
-        return client.sendMessage(remoteJid, {
-            text: '❌ Provide a YouTube link or search query.\nEx: .video1 Pasoori'
-        }, { quoted: message });
+        return client.sendMessage(remoteJid, { text: '❌ Provide a YouTube link or search query.\nEx: .video1 Pasoori' }, { quoted: message });
     }
 
     try {
-        let youtubeUrl;
-        let searchTitle = '';
+        let videoUrl = query;
 
-        if (/^https?:\/\//i.test(query)) {
-            youtubeUrl = query;
-        } else {
+        if (!query.includes('youtube.com') && !query.includes('youtu.be')) {
             const search = await yts(query);
             const video = search?.videos?.[0];
-            if (!video) {
-                return client.sendMessage(remoteJid, { text: '❌ No results found.' }, { quoted: message });
-            }
-            youtubeUrl = video.url;
-            searchTitle = video.title || '';
+            if (!video) return client.sendMessage(remoteJid, { text: '❌ No results found.' }, { quoted: message });
+            videoUrl = video.url;
         }
 
-        const servers = [
-            { name: 'WhiteShadow', run: () => whiteShadow(youtubeUrl, 'ytmp4') },
-            { name: 'EliteProTech', run: () => eliteProTech(youtubeUrl, 'mp4') },
-            { name: 'Yupra', run: () => yupra(youtubeUrl, 'mp4') },
-            { name: 'Okatsu', run: () => okatsu(youtubeUrl, 'mp4') }
-        ];
+        const data = await ytmp4(videoUrl);
+        const finalUrl = data?.video || data?.url || data?.download;
 
-        let videoData = null;
-        for (const server of servers) {
-            try {
-                console.log(`Trying ${server.name}...`);
-                const result = await server.run();
-                if (result?.url) {
-                    videoData = result;
-                    console.log(`${server.name} SUCCESS`);
-                    break;
-                }
-            } catch (err) {
-                console.log(`${server.name} FAILED:`, err.message);
-            }
+        if (!finalUrl) {
+            return client.sendMessage(remoteJid, { text: '❌ No downloadable video found.' }, { quoted: message });
         }
-
-        if (!videoData) {
-            return client.sendMessage(remoteJid, {
-                text: '❌ Video download failed — all servers are currently unavailable. Try again later.'
-            }, { quoted: message });
-        }
-
-        const title = videoData.title || searchTitle || 'KAIRO ZYNEX Video';
-        const fileName = cleanFileName(title, 'video');
 
         await client.sendMessage(remoteJid, {
-            video: { url: videoData.url },
-            mimetype: 'video/mp4',
-            fileName: `${fileName}.mp4`,
-            caption:
-                `╭━━━〔 *KAIRO ZYNEX VIDEO* 〕━━━⬣\n` +
-                `┃ 🎬 Title: ${title}\n` +
-                `╰━━━━━━━━━━━━━━━━━━━━⬣\n\n*Powered by: KAIRO ZYNEX*`
+            video: { url: finalUrl },
+            caption: `*${data?.title || 'Video'}*\n\n*Powered by: KAIRO ZYNEX*`
         }, { quoted: message });
 
     } catch (err) {

@@ -1,47 +1,91 @@
+import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
-import { jidNormalizedUser } from '@whiskeysockets/baileys';
+import { jidNormalizedUser } from 'baileys';
+import configManager from '../utils/manageConfigs.js';
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const DATA_PATH = path.join(DATA_DIR, 'welcome.json');
-
-function ensureFile() {
-    if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    if (!fs.existsSync(DATA_PATH)) fs.writeFileSync(DATA_PATH, '{}');
-}
-
-function loadData() {
-    try {
-        ensureFile();
-        const raw = fs.readFileSync(DATA_PATH, 'utf8').trim();
-        return raw ? JSON.parse(raw) : {};
-    } catch (e) {
-        return {};
-    }
-}
-
-if (!global.welcomeData) global.welcomeData = loadData();
-if (!global.welcomeActiveListeners) global.welcomeActiveListeners = new Map();
-
-function saveData() {
-    try {
-        ensureFile();
-        fs.writeFileSync(DATA_PATH, JSON.stringify(global.welcomeData, null, 2));
-    } catch (e) {
-        console.error('Welcome save error:', e.message);
-    }
+function getGroupCfg(groupId) {
+    configManager.config.groups ||= {};
+    configManager.config.groups[groupId] ||= {};
+    return configManager.config.groups[groupId];
 }
 
 function isEnabled(groupId) {
-    if (!(groupId in global.welcomeData)) return true; // ON by default
-    return global.welcomeData[groupId] !== false;
+    return getGroupCfg(groupId).welcome !== false;
 }
 
-async function getProfilePic(socket, jid) {
+async function getDisplayName(groupMetadata, participantString) {
+    const user = participantString.split('@')[0];
     try {
-        return await socket.profilePictureUrl(jid, 'image');
-    } catch (e) {
-        return null;
+        const participant = groupMetadata.participants.find(p => p.id === participantString);
+        if (participant?.name) return participant.name;
+    } catch {}
+    return user;
+}
+
+async function buildMessage(socket, groupId, participantString, type) {
+    const groupMetadata = await socket.groupMetadata(groupId);
+    const groupName = groupMetadata.subject;
+    const groupDesc = groupMetadata.desc || 'No description available';
+    const displayName = await getDisplayName(groupMetadata, participantString);
+    const cfg = getGroupCfg(groupId);
+
+    const customMessage = type === 'add' ? cfg.welcomeText : cfg.goodbyeText;
+
+    let finalMessage;
+    if (customMessage) {
+        finalMessage = customMessage
+            .replace(/{user}/g, `@${displayName}`)
+            .replace(/{group}/g, groupName)
+            .replace(/{description}/g, groupDesc);
+    } else if (type === 'add') {
+        const timeString = new Date().toLocaleString('en-US');
+        finalMessage = `╭╼━≪•𝙽𝙴𝚆 𝙼𝙴𝙼𝙱𝙴𝚁•≫━╾╮\n┃𝚆𝙴𝙻𝙲𝙾𝙼𝙴: @${displayName} 👋\n┃Member count: #${groupMetadata.participants.length}\n┃𝚃𝙸𝙼𝙴: ${timeString}⏰\n╰━━━━━━━━━━━━━━━╯\n\n*@${displayName}* Welcome to *${groupName}*! 🎉\n*Group 𝙳𝙴𝚂𝙲𝚁𝙸𝙿𝚃𝙸𝙾𝙽*\n${groupDesc}\n\n> *Powered by KAIRO ZYNEX*`;
+    } else {
+        finalMessage = `*@${displayName}* we will never miss you! 👋\n\n> *Powered by KAIRO ZYNEX*`;
+    }
+
+    return { finalMessage, groupName, groupMetadata, displayName };
+}
+
+async function sendJoinLeaveMessage(socket, groupId, participantString, type) {
+    try {
+        const { finalMessage, groupName, groupMetadata, displayName } = await buildMessage(socket, groupId, participantString, type);
+
+        let profilePicUrl = null;
+        try { profilePicUrl = await socket.profilePictureUrl(participantString, 'image'); } catch {}
+
+        try {
+            const kind = type === 'add' ? 'gaming3' : 'gaming1';
+            const action = type === 'add' ? 'join' : 'leave';
+            const color = type === 'add' ? 'green' : 'red';
+            const avatarParam = profilePicUrl ? `&avatar=${encodeURIComponent(profilePicUrl)}` : '';
+
+            const apiUrl = `https://api.some-random-api.com/welcome/img/2/${kind}?type=${action}&textcolor=${color}&username=${encodeURIComponent(displayName)}&guildName=${encodeURIComponent(groupName)}&memberCount=${groupMetadata.participants.length}${avatarParam}`;
+
+            const response = await fetch(apiUrl);
+            if (response.ok) {
+                const imageBuffer = await response.buffer();
+                await socket.sendMessage(groupId, {
+                    image: imageBuffer,
+                    caption: finalMessage,
+                    mentions: [participantString]
+                });
+                return;
+            }
+        } catch (imageError) {
+            console.log('Welcome/goodbye image generation failed, falling back to local photo:', imageError.message);
+        }
+
+        // Fallback: bot's own local photo instead of a plain text message.
+        await socket.sendMessage(groupId, {
+            image: fs.readFileSync(path.join(process.cwd(), 'menu.jpg')),
+            caption: finalMessage,
+            mentions: [participantString]
+        });
+
+    } catch (error) {
+        console.error('Error sending welcome/goodbye message:', error);
     }
 }
 
@@ -49,7 +93,7 @@ async function getProfilePic(socket, jid) {
 export function initWelcome(socket) {
     try {
         if (!socket || !socket.user || !socket.user.id) return;
-        if (socket._welcomeListenerAttached) return; // already attached on THIS socket instance
+        if (socket._welcomeListenerAttached) return;
         socket._welcomeListenerAttached = true;
 
         const sessionJid = jidNormalizedUser(socket.user.id);
@@ -62,96 +106,107 @@ export function initWelcome(socket) {
                 if (action !== 'add' && action !== 'remove') return;
                 if (!isEnabled(groupId)) return;
 
-                let groupMetadata;
-                try {
-                    groupMetadata = await socket.groupMetadata(groupId);
-                } catch (e) {
-                    return;
-                }
-
-                const memberCount = groupMetadata.participants?.length || 0;
-                const groupName = groupMetadata.subject || 'this group';
-                const dateStr = new Date().toLocaleString('en-US');
-
-                for (const participantId of participants) {
-                    const userTag = `@${participantId.split('@')[0]}`;
-
-                    let pic = await getProfilePic(socket, participantId);
-                    if (!pic) pic = await getProfilePic(socket, sessionJid);
-
-                    const title = action === 'add' ? 'WELCOME 🫣❤' : 'You left my group? 🥱😂 Don’t worry, nobody even noticed you were gone… not even the group. 🐶';
-
-                    const caption =
-                        `*╭┈───〔 KAIRO ZYNEX 〕┈───⊷*\n` +
-                        `*├⬗ ${title}*\n` +
-                        `*├⬗ USER :* ${userTag}\n` +
-                        `*├⬗ GROUP :* ${groupName}\n` +
-                        `*├⬗ DATE :* ${dateStr}\n` +
-                        `*├⬗ Members :* ${memberCount}\n` +
-                        `*╰───────────────────⊷*\n\n` +
-                        `> *POWERED BY KAIRO ZYNEX*`;
-
-                    try {
-                        await socket.sendMessage(groupId, {
-                            image: pic ? { url: pic } : fs.readFileSync(path.join(process.cwd(), 'menu.jpg')),
-                            caption,
-                            mentions: [participantId]
-                        });
-                    } catch (e) {
-                        console.error('Welcome send error:', e.message);
-                    }
+                for (const participant of participants) {
+                    const participantString = typeof participant === 'string' ? participant : (participant.id || participant.toString());
+                    await sendJoinLeaveMessage(socket, groupId, participantString, action);
                 }
             } catch (e) {
-                console.error('Welcome listener error:', e.message);
+                console.error('Welcome/goodbye listener error:', e.message);
             }
         };
 
         socket.ev.on('group-participants.update', listener);
+        if (!global.welcomeActiveListeners) global.welcomeActiveListeners = new Map();
         global.welcomeActiveListeners.set(socketId, listener);
     } catch (e) {
         console.error('Welcome init error:', e.message);
     }
 }
 
-// ─── .welcome on/off (called from events/messageHandler.js) ────────────────
+async function isSenderAdminOrOwner(client, remoteJid, senderJid, isOwner) {
+    if (isOwner) return true;
+    try {
+        const groupMetadata = await client.groupMetadata(remoteJid);
+        return groupMetadata.participants.some(p => p.id === senderJid && p.admin);
+    } catch {
+        return false;
+    }
+}
+
+// ─── .welcome [on|off|<custom text with {user} {group} {description}>] ─────
 export async function welcomeToggle(message, client, args, isOwner) {
     const remoteJid = message.key.remoteJid;
-
     if (!remoteJid.endsWith('@g.us')) {
         return client.sendMessage(remoteJid, { text: '👥 This command only works in groups.' }, { quoted: message });
     }
 
-    try {
-        const groupMetadata = await client.groupMetadata(remoteJid);
-        const participants = groupMetadata.participants || [];
-        const senderJid = message.key.participant || message.key.remoteJid;
-        const isSenderAdmin = participants.some(p => p.id === senderJid && p.admin);
-
-        if (!isOwner && !isSenderAdmin) {
-            return client.sendMessage(remoteJid, { text: '❌ Only group admins or the bot owner can configure this.' }, { quoted: message });
-        }
-
-        const option = (args[0] || '').toLowerCase();
-
-        if (option === 'on') {
-            global.welcomeData[remoteJid] = true;
-            saveData();
-            return client.sendMessage(remoteJid, { text: '⚡ Welcome & Goodbye messages turned ON for this group.' }, { quoted: message });
-        }
-
-        if (option === 'off') {
-            global.welcomeData[remoteJid] = false;
-            saveData();
-            return client.sendMessage(remoteJid, { text: '⚡ Welcome & Goodbye messages turned OFF for this group.' }, { quoted: message });
-        }
-
-        return client.sendMessage(remoteJid, {
-            text: `🧸 Welcome Settings\n\n🔴 Status: ${isEnabled(remoteJid) ? 'ON' : 'OFF'}\n\nUsage:\n.welcome on\n.welcome off`
-        }, { quoted: message });
-
-    } catch (e) {
-        return client.sendMessage(remoteJid, { text: `❌ Error: ${e.message}` }, { quoted: message });
+    const senderJid = message.key.participant || message.key.remoteJid;
+    if (!(await isSenderAdminOrOwner(client, remoteJid, senderJid, isOwner))) {
+        return client.sendMessage(remoteJid, { text: '❌ Only group admins or the bot owner can configure this.' }, { quoted: message });
     }
+
+    const cfg = getGroupCfg(remoteJid);
+    const option = (args[0] || '').toLowerCase();
+
+    if (option === 'on') {
+        cfg.welcome = true;
+        configManager.save();
+        return client.sendMessage(remoteJid, { text: '✅ Welcome & Goodbye messages turned ON for this group.' }, { quoted: message });
+    }
+    if (option === 'off') {
+        cfg.welcome = false;
+        configManager.save();
+        return client.sendMessage(remoteJid, { text: '✅ Welcome & Goodbye messages turned OFF for this group.' }, { quoted: message });
+    }
+
+    const customText = args.join(' ').trim();
+    if (customText) {
+        cfg.welcomeText = customText;
+        configManager.save();
+        return client.sendMessage(remoteJid, { text: '✅ Custom welcome message saved.\nPlaceholders: {user} {group} {description}' }, { quoted: message });
+    }
+
+    return client.sendMessage(remoteJid, {
+        text: `👋 Welcome Settings\n\n🔸 Status: ${isEnabled(remoteJid) ? 'ON' : 'OFF'}\n🔸 Custom message: ${cfg.welcomeText ? 'yes' : 'default'}\n\nUsage:\n.welcome on\n.welcome off\n.welcome <text with {user} {group} {description}>`
+    }, { quoted: message });
 }
 
-export default { initWelcome, welcomeToggle };
+// ─── .goodbye [on|off|<custom text with {user} {group}>] ───────────────────
+export async function goodbyeToggle(message, client, args, isOwner) {
+    const remoteJid = message.key.remoteJid;
+    if (!remoteJid.endsWith('@g.us')) {
+        return client.sendMessage(remoteJid, { text: '👥 This command only works in groups.' }, { quoted: message });
+    }
+
+    const senderJid = message.key.participant || message.key.remoteJid;
+    if (!(await isSenderAdminOrOwner(client, remoteJid, senderJid, isOwner))) {
+        return client.sendMessage(remoteJid, { text: '❌ Only group admins or the bot owner can configure this.' }, { quoted: message });
+    }
+
+    const cfg = getGroupCfg(remoteJid);
+    const option = (args[0] || '').toLowerCase();
+
+    if (option === 'on') {
+        cfg.welcome = true;
+        configManager.save();
+        return client.sendMessage(remoteJid, { text: '✅ Welcome & Goodbye messages turned ON for this group.' }, { quoted: message });
+    }
+    if (option === 'off') {
+        cfg.welcome = false;
+        configManager.save();
+        return client.sendMessage(remoteJid, { text: '✅ Welcome & Goodbye messages turned OFF for this group.' }, { quoted: message });
+    }
+
+    const customText = args.join(' ').trim();
+    if (customText) {
+        cfg.goodbyeText = customText;
+        configManager.save();
+        return client.sendMessage(remoteJid, { text: '✅ Custom goodbye message saved.\nPlaceholders: {user} {group}' }, { quoted: message });
+    }
+
+    return client.sendMessage(remoteJid, {
+        text: `👋 Goodbye Settings\n\n🔸 Status: ${isEnabled(remoteJid) ? 'ON' : 'OFF'}\n🔸 Custom message: ${cfg.goodbyeText ? 'yes' : 'default'}\n\nUsage:\n.goodbye on\n.goodbye off\n.goodbye <text with {user} {group}>`
+    }, { quoted: message });
+}
+
+export default { initWelcome, welcomeToggle, goodbyeToggle };

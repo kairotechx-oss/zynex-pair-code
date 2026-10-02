@@ -19,7 +19,7 @@ export async function wiki(message, client, topic, lang = 'en') {
 }
 
 export async function druzz(message, client, question) {
-    if (!question) return client.sendMessage(message.key.remoteJid, { text: 'Usage: .druzz <question>' }, { quoted: message });
+    if (!question) return client.sendMessage(message.key.remoteJid, { text: 'Usage: .kairo <question>' }, { quoted: message });
     try {
         const data = await fetchWiki(question, 'en');
         await client.sendMessage(message.key.remoteJid, {
@@ -30,4 +30,4 @@ export async function druzz(message, client, question) {
     }
 }
 
-export default { wiki, druzz };
+export default { wiki, kairo };

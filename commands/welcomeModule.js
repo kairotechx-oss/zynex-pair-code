@@ -1,7 +1,7 @@
 import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
-import { jidNormalizedUser } from 'baileys';
+import { jidNormalizedUser } from '@whiskeysockets/baileys';
 import configManager from '../utils/manageConfigs.js';
 
 function getGroupCfg(groupId) {
